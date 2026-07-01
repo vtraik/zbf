@@ -8,42 +8,87 @@ const Command = union(enum) {
     // clear (optimiz: [-])
     out_byte,
     in_byte,
-    jump_start: usize,
-    jump_end: usize,
+    loop_start: usize,
+    loop_end: usize,
 };
 
 // map file input to commands, modulo arithmetic (256, 65536)
-// fn mapToCommands(aloc: Allocator, code: []const u8) ![]Command {
-//     var commands: std.ArrayList(Command) = .empty;
-//     defer commands.deinit(aloc);
-//
-//     for (code) |c| {
-//         const command: Command = switch (c) {
-//             '>' => .{ .add_ptr = 1 },
-//             '<' => .{ .add_ptr = 65535 },
-//             '+' => .{ .add_data = 1 },
-//             '-' => .{ .add_data = 255 },
-//             '.' => .out_byte,
-//             ',' => .in_byte,
-//             '[' => undefined,
-//             ']' => undefined,
-//             else => continue,
-//         };
-//         try commands.append(aloc, command);
-//     }
-//
-//     return commands.toOwnedSlice(aloc);
-// }
-//
-// fn addLoops(commands: []Command) !void {
-//
-// }
-//
-// fn execute(commands: []Command) !void {
-//
-// }
+fn mapToCommands(aloc: Allocator, code: []const u8) ![]Command {
+    var commands: std.ArrayList(Command) = .empty;
+    defer commands.deinit(aloc);
 
-// [> + -, - < ] -> jf inc + - out in - < jb
+    var stack: std.ArrayList(usize) = .empty;
+    defer stack.deinit(aloc);
+
+    for (code) |c| {
+        switch (c) {
+            '>' => try commands.append(aloc, .{ .add_ptr = 1 }),
+
+            '<' => try commands.append(aloc, .{ .add_ptr = 65535 }),
+
+            '+' => try commands.append(aloc, .{ .add_data = 1 }),
+
+            '-' => try commands.append(aloc, .{ .add_data = 255 }),
+
+            '.' => try commands.append(aloc, .{ .out_byte = {} }),
+            ',' => try commands.append(aloc, .{ .in_byte = {} }),
+
+            '[' => {
+                const open_idx = commands.items.len;
+                try stack.append(aloc, open_idx);
+                try commands.append(aloc, .{ .loop_start = undefined });
+            },
+            ']' => {
+                const close_idx = commands.items.len;
+                const open_idx = stack.pop() orelse return error.UnmatchedLoopClose;
+
+                try commands.append(aloc, .{ .loop_end = open_idx + 1 });
+                commands.items[open_idx].loop_start = close_idx + 1;
+            },
+            else => continue,
+        }
+    }
+
+    return commands.toOwnedSlice(aloc);
+}
+
+fn execute(io: std.Io, commands: []const Command) !void {
+    var in_buf: [1]u8 = undefined;
+    var out_buf: [1]u8 = undefined;
+
+    var stdin = std.Io.File.stdin().reader(io, &in_buf);
+    var stdout = std.Io.File.stdout().writer(io, &out_buf);
+
+    const reader = &stdin.interface;
+    const writer = &stdout.interface;
+
+    var pc: usize = 0;
+    var mem: [65536]u8 = @splat(0);
+    var ptr: u16 = 0;
+
+    while (pc < commands.len) : (pc += 1) {
+        switch (commands[pc]) {
+            .add_data => |val| mem[ptr] +%= val,
+            .add_ptr => |val| ptr +%= val,
+            .loop_start => |end_idx| {
+                if (mem[ptr] == 0)
+                    pc = end_idx;
+            },
+            .loop_end => |start_idx| {
+                if (mem[ptr] != 0)
+                    pc = start_idx;
+            },
+            .in_byte => {
+                const byte = try reader.takeByte();
+                mem[ptr] = byte;
+            },
+            .out_byte => {
+                try writer.writeByte(mem[ptr]);
+                // try writer.flush();
+            },
+        }
+    }
+}
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -68,15 +113,15 @@ pub fn main(init: std.process.Init) !void {
     const code = try Io.Dir.readFileAlloc(cwd, io, args[1], allocator, .limited(std.math.maxInt(u32)));
     defer allocator.free(code);
 
-    std.debug.print("{s}\n", .{code});
-
     // get commands
-    // var commands: []Command = try mapToCommands(allocator, code);
+    const commands: []Command = try mapToCommands(allocator, code);
+
+    // for (commands) |c| {
+    //     std.debug.print("{}\n", .{c});
+    // }
 
     // (optimize: repeats, clear([-]))
 
-    // link_loops (start,end)
-    // try addLoops(commands);
     // execute
-    // try execute(commands);
+    try execute(io, commands);
 }
