@@ -94,18 +94,15 @@ fn optimizeClear(aloc: Allocator, commands_ptr: *[]Command) !void {
             const c2 = commands[read_idx + 1];
             const c3 = commands[read_idx + 2];
 
-            if (c1 == .loop_start and c2 == .add_data and c3 == .loop_end) {
-                // odd values clear eventually, even don't
-                if (c2.add_data % 2 == 1) {
-                    commands[write_idx] = .clear;
-                    write_idx += 1;
-                    read_idx += 3;
-                    continue;
-                }
+            // odd values clear eventually, even don't
+            if (c1 == .loop_start and c2 == .add_data and c3 == .loop_end and c2.add_data % 2 == 1) {
+                commands[write_idx] = .clear;
+                write_idx += 1;
+                read_idx += 3;
+                continue;
             }
         }
 
-        // read + 2 >= len or c1 and c2 and c3 fails or c2.add_data fails
         commands[write_idx] = commands[read_idx];
         write_idx += 1;
         read_idx += 1;
