@@ -5,7 +5,7 @@ const Io = std.Io;
 const Command = union(enum) {
     add_data: u8,
     add_ptr: u16, // addr space: 2^16
-    // clear (optimiz: [-])
+    clear,
     out_byte,
     in_byte,
     loop_start: usize,
@@ -41,7 +41,7 @@ fn mapToCommands(aloc: Allocator, code: []const u8) ![]Command {
 }
 
 // optimize repeats to singular commands
-fn optimize(aloc: Allocator, commands_ptr: *[]Command) !void {
+fn optimizeRepeat(aloc: Allocator, commands_ptr: *[]Command) !void {
     var commands: []Command = commands_ptr.*;
     var read_idx: usize = 0;
     var write_idx: usize = 0;
@@ -80,6 +80,37 @@ fn optimize(aloc: Allocator, commands_ptr: *[]Command) !void {
             },
         }
     }
+    commands_ptr.* = try aloc.realloc(commands, write_idx);
+}
+
+fn optimizeClear(aloc: Allocator, commands_ptr: *[]Command) !void {
+    var commands: []Command = commands_ptr.*;
+    var read_idx: usize = 0;
+    var write_idx: usize = 0;
+
+    while (read_idx < commands.len) {
+        if (read_idx + 2 < commands.len) {
+            const c1 = commands[read_idx];
+            const c2 = commands[read_idx + 1];
+            const c3 = commands[read_idx + 2];
+
+            if (c1 == .loop_start and c2 == .add_data and c3 == .loop_end) {
+                // odd values clear eventually, even don't
+                if (c2.add_data % 2 == 1) {
+                    commands[write_idx] = .clear;
+                    write_idx += 1;
+                    read_idx += 3;
+                    continue;
+                }
+            }
+        }
+
+        // read + 2 >= len or c1 and c2 and c3 fails or c2.add_data fails
+        commands[write_idx] = commands[read_idx];
+        write_idx += 1;
+        read_idx += 1;
+    }
+
     commands_ptr.* = try aloc.realloc(commands, write_idx);
 }
 
@@ -137,6 +168,9 @@ fn execute(io: std.Io, commands: []const Command) !void {
                     continue;
                 }
             },
+            .clear => {
+                mem[ptr] = 0;
+            },
             .in_byte => {
                 const byte = try reader.takeByte();
                 mem[ptr] = byte;
@@ -175,7 +209,8 @@ pub fn main(init: std.process.Init) !void {
     var commands: []Command = try mapToCommands(allocator, code);
 
     // (optimize: repeats, clear([-]))
-    try optimize(allocator, &commands);
+    try optimizeRepeat(allocator, &commands);
+    try optimizeClear(allocator, &commands);
 
     // calc loop indx
     try calcLoops(allocator, &commands);
