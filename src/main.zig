@@ -17,84 +17,95 @@ fn mapToCommands(aloc: Allocator, code: []const u8) ![]Command {
     var commands: std.ArrayList(Command) = .empty;
     defer commands.deinit(aloc);
 
-    var stack: std.ArrayList(usize) = .empty;
-    defer stack.deinit(aloc);
-
     for (code) |c| {
-        switch (c) {
-            '>' => try commands.append(aloc, .{ .add_ptr = 1 }),
+        const cmd: Command = switch (c) {
+            '>' => .{ .add_ptr = 1 },
 
-            '<' => try commands.append(aloc, .{ .add_ptr = 65535 }),
+            '<' => .{ .add_ptr = 65535 },
 
-            '+' => try commands.append(aloc, .{ .add_data = 1 }),
+            '+' => .{ .add_data = 1 },
 
-            '-' => try commands.append(aloc, .{ .add_data = 255 }),
+            '-' => .{ .add_data = 255 },
 
-            '.' => try commands.append(aloc, .{ .out_byte = {} }),
-            ',' => try commands.append(aloc, .{ .in_byte = {} }),
+            '.' => .{ .out_byte = {} },
+            ',' => .{ .in_byte = {} },
 
-            '[' => {
-                const open_idx = commands.items.len;
-                try stack.append(aloc, open_idx);
-                try commands.append(aloc, .{ .loop_start = undefined });
-            },
-            ']' => {
-                const close_idx = commands.items.len;
-                const open_idx = stack.pop() orelse return error.UnmatchedLoopClose;
-
-                try commands.append(aloc, .{ .loop_end = open_idx + 1 });
-                commands.items[open_idx].loop_start = close_idx + 1;
-            },
+            '[' => .{ .loop_start = 0 },
+            ']' => .{ .loop_end = 0 },
             else => continue,
-        }
+        };
+        try commands.append(aloc, cmd);
     }
 
     return commands.toOwnedSlice(aloc);
 }
 
 // optimize repeats to singular commands
-// fn optimize(aloc: Allocator, commands_ptr: *[]Command) !void {
-//     var commands: []Command = commands_ptr.*;
-//     var read_idx: usize = 0;
-//     var write_idx: usize = 0;
-//
-//     while (read_idx < commands.len) {
-//         switch (commands[read_idx]) {
-//             .add_data => {
-//                 // repeating + or -
-//                 var inc_value: u8 = 0;
-//                 while (read_idx < commands.len and
-//                     commands[read_idx] == .add_data) : (read_idx += 1)
-//                 {
-//                     inc_value +%= commands[read_idx].add_data;
-//                 }
-//
-//                 commands[write_idx] = .{ .add_data = inc_value };
-//                 write_idx += 1;
-//             },
-//             .add_ptr => {
-//                 // repeating > or <
-//                 var shift_value: u16 = 0;
-//                 while (read_idx < commands.len and
-//                     commands[read_idx] == .add_ptr) : (read_idx += 1)
-//                 {
-//                     shift_value +%= commands[read_idx].add_ptr;
-//                 }
-//
-//                 commands[write_idx] = .{ .add_ptr = shift_value };
-//                 write_idx += 1;
-//             },
-//             else => {
-//                 // other commands
-//                 // std.debug.print("wr = {d} | re = {d}\n", .{ write_idx, read_idx });
-//                 commands[write_idx] = commands[read_idx];
-//                 write_idx += 1;
-//                 read_idx += 1;
-//             },
-//         }
-//     }
-//     commands_ptr.* = try aloc.realloc(commands, write_idx);
-// }
+fn optimize(aloc: Allocator, commands_ptr: *[]Command) !void {
+    var commands: []Command = commands_ptr.*;
+    var read_idx: usize = 0;
+    var write_idx: usize = 0;
+
+    while (read_idx < commands.len) {
+        switch (commands[read_idx]) {
+            .add_data => {
+                // repeating + or -
+                var inc_value: u8 = 0;
+                while (read_idx < commands.len and
+                    commands[read_idx] == .add_data) : (read_idx += 1)
+                {
+                    inc_value +%= commands[read_idx].add_data;
+                }
+
+                commands[write_idx] = .{ .add_data = inc_value };
+                write_idx += 1;
+            },
+            .add_ptr => {
+                // repeating > or <
+                var shift_value: u16 = 0;
+                while (read_idx < commands.len and
+                    commands[read_idx] == .add_ptr) : (read_idx += 1)
+                {
+                    shift_value +%= commands[read_idx].add_ptr;
+                }
+
+                commands[write_idx] = .{ .add_ptr = shift_value };
+                write_idx += 1;
+            },
+            else => {
+                // other commands
+                commands[write_idx] = commands[read_idx];
+                write_idx += 1;
+                read_idx += 1;
+            },
+        }
+    }
+    commands_ptr.* = try aloc.realloc(commands, write_idx);
+}
+
+// calculates loop targets after optimizations
+fn calcLoops(aloc: Allocator, commands_ptr: *[]Command) !void {
+    var commands = commands_ptr.*;
+    var stack: std.ArrayList(usize) = .empty;
+    defer stack.deinit(aloc);
+
+    for (commands, 0..) |c, idx| {
+        switch (c) {
+            .loop_start => {
+                const open_idx = idx;
+                try stack.append(aloc, open_idx);
+            },
+            .loop_end => {
+                const close_idx = idx;
+                const open_idx = stack.pop() orelse return error.UnmatchedLoopClose;
+
+                commands[close_idx].loop_end = open_idx + 1;
+                commands[open_idx].loop_start = close_idx + 1;
+            },
+            else => continue,
+        }
+    }
+}
 
 fn execute(io: std.Io, commands: []const Command) !void {
     var in_buf: [1]u8 = undefined;
@@ -150,7 +161,6 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(allocator);
 
     if (args.len != 2) {
-        // const stderr = io.getStdErr().writer();
         std.debug.print("Usage: {s} <file>\n", .{args[0]});
         std.process.exit(1);
     }
@@ -162,10 +172,13 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(code);
 
     // get commands
-    const commands: []Command = try mapToCommands(allocator, code);
+    var commands: []Command = try mapToCommands(allocator, code);
 
     // (optimize: repeats, clear([-]))
-    // try optimize(allocator, &commands);
+    try optimize(allocator, &commands);
+
+    // calc loop indx
+    try calcLoops(allocator, &commands);
 
     // execute
     try execute(io, commands);
