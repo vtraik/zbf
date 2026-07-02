@@ -52,6 +52,50 @@ fn mapToCommands(aloc: Allocator, code: []const u8) ![]Command {
     return commands.toOwnedSlice(aloc);
 }
 
+// optimize repeats to singular commands
+// fn optimize(aloc: Allocator, commands_ptr: *[]Command) !void {
+//     var commands: []Command = commands_ptr.*;
+//     var read_idx: usize = 0;
+//     var write_idx: usize = 0;
+//
+//     while (read_idx < commands.len) {
+//         switch (commands[read_idx]) {
+//             .add_data => {
+//                 // repeating + or -
+//                 var inc_value: u8 = 0;
+//                 while (read_idx < commands.len and
+//                     commands[read_idx] == .add_data) : (read_idx += 1)
+//                 {
+//                     inc_value +%= commands[read_idx].add_data;
+//                 }
+//
+//                 commands[write_idx] = .{ .add_data = inc_value };
+//                 write_idx += 1;
+//             },
+//             .add_ptr => {
+//                 // repeating > or <
+//                 var shift_value: u16 = 0;
+//                 while (read_idx < commands.len and
+//                     commands[read_idx] == .add_ptr) : (read_idx += 1)
+//                 {
+//                     shift_value +%= commands[read_idx].add_ptr;
+//                 }
+//
+//                 commands[write_idx] = .{ .add_ptr = shift_value };
+//                 write_idx += 1;
+//             },
+//             else => {
+//                 // other commands
+//                 // std.debug.print("wr = {d} | re = {d}\n", .{ write_idx, read_idx });
+//                 commands[write_idx] = commands[read_idx];
+//                 write_idx += 1;
+//                 read_idx += 1;
+//             },
+//         }
+//     }
+//     commands_ptr.* = try aloc.realloc(commands, write_idx);
+// }
+
 fn execute(io: std.Io, commands: []const Command) !void {
     var in_buf: [1]u8 = undefined;
     var out_buf: [1]u8 = undefined;
@@ -66,17 +110,21 @@ fn execute(io: std.Io, commands: []const Command) !void {
     var mem: [65536]u8 = @splat(0);
     var ptr: u16 = 0;
 
-    while (pc < commands.len) : (pc += 1) {
+    while (pc < commands.len) {
         switch (commands[pc]) {
             .add_data => |val| mem[ptr] +%= val,
             .add_ptr => |val| ptr +%= val,
             .loop_start => |end_idx| {
-                if (mem[ptr] == 0)
+                if (mem[ptr] == 0) {
                     pc = end_idx;
+                    continue;
+                }
             },
             .loop_end => |start_idx| {
-                if (mem[ptr] != 0)
+                if (mem[ptr] != 0) {
                     pc = start_idx;
+                    continue;
+                }
             },
             .in_byte => {
                 const byte = try reader.takeByte();
@@ -84,9 +132,9 @@ fn execute(io: std.Io, commands: []const Command) !void {
             },
             .out_byte => {
                 try writer.writeByte(mem[ptr]);
-                // try writer.flush();
             },
         }
+        pc += 1;
     }
 }
 
@@ -116,11 +164,8 @@ pub fn main(init: std.process.Init) !void {
     // get commands
     const commands: []Command = try mapToCommands(allocator, code);
 
-    // for (commands) |c| {
-    //     std.debug.print("{}\n", .{c});
-    // }
-
     // (optimize: repeats, clear([-]))
+    // try optimize(allocator, &commands);
 
     // execute
     try execute(io, commands);
