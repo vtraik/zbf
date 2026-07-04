@@ -127,10 +127,11 @@ fn validRange(start: usize, end: usize, commands: []Command) bool {
 
 fn simulateLoop(alloc: Allocator, start_lidx: usize, end_lidx: usize, commands: []Command) !?std.AutoHashMap(u16, u8) {
     var ptr: u16 = 0;
-    var pc: usize = start_lidx + 1;
+    var pc: usize = start_lidx;
     // <base_off, val>
     var delta = std.AutoHashMap(u16, u8).init(alloc);
 
+    // [->+++++<] = [->+5<]
     while (pc < end_lidx) : (pc += 1) {
         switch (commands[pc]) {
             .add_ptr => |v| ptr +%= v,
@@ -148,7 +149,7 @@ fn simulateLoop(alloc: Allocator, start_lidx: usize, end_lidx: usize, commands: 
     }
 
     // ptr is in start pos and starting cell net diff -1 => mult loop
-    if (ptr != 0 or (delta.get(0) orelse 0) != -1) { // if change == -1 => delta(0): 255 = all 1's = -1
+    if (ptr != 0 or (delta.get(0) orelse 0) != 255) { // if change == -1 => delta(0): 255 = all 1's = -1
         defer delta.deinit();
         return null;
     }
@@ -164,6 +165,7 @@ fn simulateLoop(alloc: Allocator, start_lidx: usize, end_lidx: usize, commands: 
 //     ^     ^
 //     |     |
 // ____x_____y______
+// doesn't support nested mul loops
 fn optimizeMul(alloc: Allocator, commands: []Command) ![]Command {
     var read_idx: usize = 0;
 
@@ -184,11 +186,13 @@ fn optimizeMul(alloc: Allocator, commands: []Command) ![]Command {
             .loop_end => {
                 const open_idx = stack.pop() orelse unreachable;
                 // check for only + - > < inside range (open_idx, read_idx)
-                if (!validRange(open_idx + 1, new_commands.items.len - 1, new_commands.items)) continue :label;
+                if (!validRange(open_idx + 1, new_commands.items.len - 1, new_commands.items)) {
+                    continue :label;
+                }
 
                 // check if mult loop <=> simulate loop
                 var offs_and_factors =
-                    try simulateLoop(alloc, open_idx, new_commands.items.len, new_commands.items) orelse continue :label;
+                    try simulateLoop(alloc, open_idx + 1, new_commands.items.len - 1, new_commands.items) orelse continue :label;
                 defer offs_and_factors.deinit();
 
                 // is mult loop => make mult instructions
@@ -268,7 +272,6 @@ fn execute(io: std.Io, commands: []const Command) !void {
                 mem[ptr] = byte;
             },
             .out_byte => {
-                // std.debug.print("Im writing byte {}\n", .{mem[ptr]});
                 try writer.writeByte(mem[ptr]);
                 try writer.flush();
             },
