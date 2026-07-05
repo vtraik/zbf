@@ -2,6 +2,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
+const BfError = error{
+    ScanLoopMissingTerm
+};
+
 const Command = union(enum) {
     add_data: u8,
     add_ptr: u16, // addr space: 2^16
@@ -14,6 +18,8 @@ const Command = union(enum) {
     in_byte,
     loop_start: usize,
     loop_end: usize,
+    scan_left,
+    scan_right
 };
 
 // map file input to commands, modulo arithmetic (256, 65536)
@@ -119,7 +125,7 @@ fn optimizeClear(alloc: Allocator, commands_ptr: *[]Command) !void {
 fn validRange(start: usize, end: usize, commands: []Command) bool {
     var idx = start;
     while (idx < end) : (idx += 1) {
-        if (commands[idx] != .add_data and commands[idx] != .add_ptr and commands[idx] != .clear and commands[idx] != .mul)
+        if (commands[idx] != .add_data and commands[idx] != .add_ptr)
             return false;
     }
     return true;
@@ -209,6 +215,38 @@ fn optimizeMul(alloc: Allocator, commands: []Command) ![]Command {
 
     return try new_commands.toOwnedSlice(alloc);
 }
+
+fn optimizeScan(alloc: Allocator, commands_ptr: *[]Command) !void {
+    var commands: []Command = commands_ptr.*;
+    var read_idx: usize = 0;
+    var write_idx: usize = 0;
+    // [>] or [<]
+    while (read_idx < commands.len) {
+        if (read_idx + 2 < commands.len) {
+            if (commands[read_idx] == .loop_start and commands[read_idx + 1] == .add_ptr
+                and commands[read_idx + 2] == .loop_end) {
+                if (commands[read_idx + 1].add_ptr == 1) {
+                    commands[write_idx] = .scan_right;
+                    write_idx += 1;
+                    read_idx += 3;
+                    continue;
+                } else if (commands[read_idx + 1].add_ptr == 65535) {
+                    commands[write_idx] = .scan_left;
+                    write_idx += 1;
+                    read_idx += 3;
+                    continue;
+                }
+            }
+        }
+
+        commands[write_idx] = commands[read_idx];
+        write_idx += 1;
+        read_idx += 1;
+    }
+    commands_ptr.* = try alloc.realloc(commands, write_idx);
+}
+
+
 // calculates loop targets after optimizations
 fn calcLoops(alloc: Allocator, commands_ptr: *[]Command) !void {
     var commands = commands_ptr.*;
@@ -253,7 +291,17 @@ fn execute(io: std.Io, commands: []const Command) !void {
             .add_ptr => |val| ptr +%= val,
             .clear => mem[ptr] = 0,
             .mul => |p| {
-                mem[ptr + p.x] += mem[ptr] * p.y;
+                mem[ptr +% p.x] +%= mem[ptr] *% p.y;
+            },
+            .scan_right => {
+                const off = std.mem.indexOfScalar(u8, mem[ptr..], 0)
+                      orelse return error.ScanLoopMissingTerm;
+                ptr += @intCast(off);
+            },
+            .scan_left => {
+                const idx = std.mem.lastIndexOfScalar(u8, mem[0..ptr+1], 0)
+                      orelse return error.ScanLoopMissingTerm;
+                ptr = @intCast(idx);
             },
             .loop_start => |end_idx| {
                 if (mem[ptr] == 0) {
@@ -280,6 +328,7 @@ fn execute(io: std.Io, commands: []const Command) !void {
     }
 }
 
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const cwd = Io.Dir.cwd();
@@ -305,10 +354,11 @@ pub fn main(init: std.process.Init) !void {
     // get commands
     var commands: []Command = try mapToCommands(allocator, code);
 
-    // (optimize: repeats, clear([-]))
+    // (optimize: repeats, clear([-]), mul, scan, offsets)
     try optimizeRepeat(allocator, &commands);
     try optimizeClear(allocator, &commands);
     commands = try optimizeMul(allocator, commands);
+    try optimizeScan(allocator, &commands);
 
     // calc loop indx
     try calcLoops(allocator, &commands);
