@@ -7,15 +7,19 @@ const BfError = error{
 };
 
 const Command = union(enum) {
-    add_data: u8,
+    add_data: struct {
+        x: u8,
+        offs: u16
+    },
     add_ptr: u16, // addr space: 2^16
     mul: struct { // mul(x,y) := mem[ptr + x] += mem[ptr] * y
         x: u16,
         y: u8,
+        offs: u16
     },
-    clear,
-    out_byte,
-    in_byte,
+    clear: u16, // u16 == offset
+    out_byte: u16,
+    in_byte: u16,
     loop_start: usize,
     loop_end: usize,
     scan_left,
@@ -33,12 +37,12 @@ fn mapToCommands(alloc: Allocator, code: []const u8) ![]Command {
 
             '<' => .{ .add_ptr = 65535 },
 
-            '+' => .{ .add_data = 1 },
+            '+' => .{ .add_data = .{ .x = 1, .offs = 0 } },
 
-            '-' => .{ .add_data = 255 },
+            '-' => .{ .add_data = .{ .x = 255, .offs = 0 } },
 
-            '.' => .{ .out_byte = {} },
-            ',' => .{ .in_byte = {} },
+            '.' => .{ .out_byte = 0 },
+            ',' => .{ .in_byte =  0 },
 
             '[' => .{ .loop_start = 0 },
             ']' => .{ .loop_end = 0 },
@@ -64,10 +68,10 @@ fn optimizeRepeat(alloc: Allocator, commands_ptr: *[]Command) !void {
                 while (read_idx < commands.len and
                     commands[read_idx] == .add_data) : (read_idx += 1)
                 {
-                    inc_value +%= commands[read_idx].add_data;
+                    inc_value +%= commands[read_idx].add_data.x;
                 }
 
-                commands[write_idx] = .{ .add_data = inc_value };
+                commands[write_idx] = .{ .add_data = .{ .x = inc_value, .offs = 0 } };
                 write_idx += 1;
             },
             .add_ptr => {
@@ -106,8 +110,8 @@ fn optimizeClear(alloc: Allocator, commands_ptr: *[]Command) !void {
             const c3 = commands[read_idx + 2];
 
             // odd values clear eventually, even don't
-            if (c1 == .loop_start and c2 == .add_data and c3 == .loop_end and c2.add_data % 2 == 1) {
-                commands[write_idx] = .clear;
+            if (c1 == .loop_start and c2 == .add_data and c3 == .loop_end and c2.add_data.x % 2 == 1) {
+                commands[write_idx] = .{ .clear = 0 };
                 write_idx += 1;
                 read_idx += 3;
                 continue;
@@ -145,7 +149,7 @@ fn simulateLoop(alloc: Allocator, start_lidx: usize, end_lidx: usize, commands: 
                 const entry = try delta.getOrPut(ptr);
                 if (!entry.found_existing)
                     entry.value_ptr.* = 0;
-                entry.value_ptr.* +%= v;
+                entry.value_ptr.* +%= v.x;
             },
             else => {
                 defer delta.deinit();
@@ -205,9 +209,10 @@ fn optimizeMul(alloc: Allocator, commands: []Command) ![]Command {
                 new_commands.shrinkRetainingCapacity(open_idx); // back to '[' to overwrite from there
                 var it = offs_and_factors.iterator();
                 while (it.next()) |entry| {
-                    try new_commands.append(alloc, .{ .mul = .{ .x = entry.key_ptr.*, .y = entry.value_ptr.* } });
+                    try new_commands.append(alloc, .{ .mul = .{ .x = entry.key_ptr.*, .y = entry.value_ptr.*,
+                                                                .offs = 0 } });
                 }
-                try new_commands.append(alloc, .clear);
+                try new_commands.append(alloc, .{ .clear = 0 });
             },
             else => continue :label,
         }
@@ -246,6 +251,70 @@ fn optimizeScan(alloc: Allocator, commands_ptr: *[]Command) !void {
     commands_ptr.* = try alloc.realloc(commands, write_idx);
 }
 
+fn optimizeOffs(alloc: Allocator, commands: []Command) ![]Command {
+    var read_idx: usize = 0;
+    var curr_offs: u16 = 0;
+
+    var new_commands: std.ArrayList(Command) = .empty;
+    errdefer new_commands.deinit(alloc);
+
+    while (read_idx < commands.len) : (read_idx += 1){
+        switch (commands[read_idx]) {
+            .add_ptr => |v| {
+                curr_offs +%= v;
+            },
+            .add_data => |p| {
+                try new_commands.append(alloc, .{ .add_data = .{ .x = p.x, .offs = curr_offs } });
+            },
+            .mul => |p| {
+                try new_commands.append(alloc, .{ .mul = .{ .x = p.x,
+                                                            .y = p.y,
+                                                            .offs = curr_offs } });
+            },
+            .clear => {
+                try new_commands.append(alloc, .{ .clear = curr_offs });
+            },
+            .in_byte => {
+                try new_commands.append(alloc, .{ .in_byte = curr_offs });
+            },
+            .out_byte => {
+                try new_commands.append(alloc, .{ .out_byte = curr_offs });
+            },
+            .loop_start => {
+                if (curr_offs != 0) {
+                    try new_commands.append(alloc, .{ .add_ptr = curr_offs });
+                    curr_offs = 0;
+                }
+                try new_commands.append(alloc, .{ .loop_start = 0 });
+            },
+            .loop_end => {
+                if (curr_offs != 0) {
+                    try new_commands.append(alloc, .{ .add_ptr = curr_offs });
+                    curr_offs = 0;
+                }
+                try new_commands.append(alloc, .{ .loop_end = 0 });
+            },
+            .scan_left => {
+                if (curr_offs != 0) {
+                    try new_commands.append(alloc, .{ .add_ptr = curr_offs });
+                }
+                try new_commands.append(alloc, .scan_left);
+                curr_offs = 0;
+            },
+            .scan_right => {
+                if (curr_offs != 0) {
+                    try new_commands.append(alloc, .{ .add_ptr = curr_offs });
+                }
+                try new_commands.append(alloc, .scan_right);
+                curr_offs = 0;
+            }
+        }
+
+    }
+
+    return try new_commands.toOwnedSlice(alloc);
+}
+
 
 // calculates loop targets after optimizations
 fn calcLoops(alloc: Allocator, commands_ptr: *[]Command) !void {
@@ -271,6 +340,7 @@ fn calcLoops(alloc: Allocator, commands_ptr: *[]Command) !void {
     }
 }
 
+
 fn execute(io: std.Io, commands: []const Command) !void {
     var in_buf: [1]u8 = undefined;
     var out_buf: [1]u8 = undefined;
@@ -287,11 +357,11 @@ fn execute(io: std.Io, commands: []const Command) !void {
 
     while (pc < commands.len) {
         switch (commands[pc]) {
-            .add_data => |val| mem[ptr] +%= val,
+            .add_data => |p| mem[ptr +% p.offs] +%= p.x,
             .add_ptr => |val| ptr +%= val,
-            .clear => mem[ptr] = 0,
+            .clear => |v| mem[ptr +% v] = 0,
             .mul => |p| {
-                mem[ptr +% p.x] +%= mem[ptr] *% p.y;
+                mem[ptr +% p.x +% p.offs] +%= mem[ptr +% p.offs] *% p.y;
             },
             .scan_right => {
                 const off = std.mem.indexOfScalar(u8, mem[ptr..], 0)
@@ -315,12 +385,12 @@ fn execute(io: std.Io, commands: []const Command) !void {
                     continue;
                 }
             },
-            .in_byte => {
+            .in_byte => |v| {
                 const byte = try reader.takeByte();
-                mem[ptr] = byte;
+                mem[ptr +% v] = byte;
             },
-            .out_byte => {
-                try writer.writeByte(mem[ptr]);
+            .out_byte => |v| {
+                try writer.writeByte(mem[ptr +% v]);
                 try writer.flush();
             },
         }
@@ -359,6 +429,7 @@ pub fn main(init: std.process.Init) !void {
     try optimizeClear(allocator, &commands);
     commands = try optimizeMul(allocator, commands);
     try optimizeScan(allocator, &commands);
+    commands = try optimizeOffs(allocator, commands);
 
     // calc loop indx
     try calcLoops(allocator, &commands);
