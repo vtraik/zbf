@@ -63,7 +63,7 @@ fn optimizeRepeat(alloc: Allocator, commands_ptr: *[]Command) !void {
                 // repeating + or -
                 var inc_value: u8 = 0;
                 while (read_idx < commands.len
-                and fcommands[read_idx] == .add_data) : (read_idx += 1) {
+                and commands[read_idx] == .add_data) : (read_idx += 1) {
                     inc_value +%= commands[read_idx].add_data.x;
                 }
 
