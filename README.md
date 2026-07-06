@@ -20,3 +20,5 @@ zig run main.zig -- <params>
 - [optimizations](http://calmerthanyouare.org/2015/01/07/optimizing-brainfuck.html)
 - [brainfuck tests](https://github.com/fabianishere/brainfuck/tree/master/examples)
 
+## Requirements
+- Zig 0.17.0
