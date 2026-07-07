@@ -6,6 +6,10 @@
 zig run main.zig -- <params>
 ```
 
+> [!WARNING]
+> This project is tested against Zig **0.17** only.
+> Other Zig versions may require code changes.
+
 ## Params
 * `filename`: the file to interpret
 * `-all`: use all of optimizations
@@ -19,6 +23,3 @@ zig run main.zig -- <params>
 - [wiki brainfuck](https://en.wikipedia.org/wiki/Brainfuck)
 - [optimizations](http://calmerthanyouare.org/2015/01/07/optimizing-brainfuck.html)
 - [brainfuck tests](https://github.com/fabianishere/brainfuck/tree/master/examples)
-
-## Requirements
-- Zig 0.17.0
