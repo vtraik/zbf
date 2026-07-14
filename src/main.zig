@@ -184,7 +184,7 @@ fn optimizeMul(alloc: Allocator, commands: []Command) ![]Command {
                 try stack.append(alloc, new_commands.items.len - 1);
             },
             .loop_end => {
-                const open_idx = stack.pop() orelse unreachable;
+                const open_idx = stack.pop() orelse return error.UnmatchedLoopClose;
                 // check for only + - > < inside range (open_idx, read_idx)
                 if (!validRange(open_idx + 1, new_commands.items.len - 1, new_commands.items))
                     continue :label;
