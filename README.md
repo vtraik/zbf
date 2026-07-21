@@ -1,4 +1,4 @@
-# Brainf*ck interpreter in zig
+# zbf
 
 ## Run
 
